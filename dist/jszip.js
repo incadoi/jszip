@@ -1,6 +1,6 @@
 /*!
 
-JSZip v3.3.0 - A JavaScript class for generating and reading zip files
+JSZip v3.4.0 - A JavaScript class for generating and reading zip files
 <http://stuartk.com/jszip>
 
 (c) 2009-2016 Stuart Knightley <stuart [at] stuartk.com>
@@ -1113,6 +1113,15 @@ module.exports = function(data, options) {
     }
 
     return utils.prepareContent("the loaded zip file", data, true, options.optimizedBinaryString, options.base64)
+    .then(function(data){
+        return utils.getTypeOf(data) !== 'blob' ? data : new external.Promise(function (resolve){
+            var fr = new FileReader();
+            fr.onload = function(evt) {
+                resolve(evt.target.result);
+            };
+            fr.readAsArrayBuffer(data);
+        });
+    })
     .then(function(data) {
         var zipEntries = new ZipEntries(options);
         zipEntries.load(data);
@@ -2148,7 +2157,11 @@ function DataWorker(dataP) {
         self.data = data;
         self.max = data && data.length || 0;
         self.type = utils.getTypeOf(data);
-        if(!self.isPaused) {
+        if (self.type === 'blob') {
+            self.max = data.size;
+        }
+
+        if (!self.isPaused) {
             self._tickAndRepeat();
         }
     }, function (e) {
@@ -2205,6 +2218,7 @@ DataWorker.prototype._tick = function() {
         return false;
     }
 
+    var self = this;
     var size = DEFAULT_BLOCK_SIZE;
     var data = null, nextIndex = Math.min(this.max, this.index + size);
     if (this.index >= this.max) {
@@ -2212,6 +2226,22 @@ DataWorker.prototype._tick = function() {
         return this.end();
     } else {
         switch(this.type) {
+            case "blob":
+                var chunk = self.data.slice(this.index, nextIndex);
+                var reader = new FileReader();
+                self.pause();
+                self.index = nextIndex;
+                reader.onload = function(e) {
+                    self.push({
+                        data : new Uint8Array(e.target.result),
+                        meta : {
+                            percent : self.max ? self.index / self.max * 100 : 0
+                        }
+                    });
+                    self.resume();
+                };
+                reader.readAsArrayBuffer(chunk);
+            return;
             case "string":
                 data = this.data.substring(this.index, nextIndex);
             break;
@@ -3358,8 +3388,13 @@ exports.transformTo = function(outputType, input) {
  * @return {String} the (lowercase) type of the input.
  */
 exports.getTypeOf = function(input) {
+    var isBlob = support.blob && (input instanceof Blob || ['[object File]', '[object Blob]'].indexOf(Object.prototype.toString.call(input)) !== -1);
+
     if (typeof input === "string") {
         return "string";
+    }
+    if (isBlob) {
+        return "blob";
     }
     if (Object.prototype.toString.call(input) === "[object Array]") {
         return "array";
@@ -3456,31 +3491,7 @@ exports.extend = function() {
  * @return {Promise} a promise in a format usable by JSZip.
  */
 exports.prepareContent = function(name, inputData, isBinary, isOptimizedBinaryString, isBase64) {
-
-    // if inputData is already a promise, this flatten it.
-    var promise = external.Promise.resolve(inputData).then(function(data) {
-        
-        
-        var isBlob = support.blob && (data instanceof Blob || ['[object File]', '[object Blob]'].indexOf(Object.prototype.toString.call(data)) !== -1);
-
-        if (isBlob && typeof FileReader !== "undefined") {
-            return new external.Promise(function (resolve, reject) {
-                var reader = new FileReader();
-
-                reader.onload = function(e) {
-                    resolve(e.target.result);
-                };
-                reader.onerror = function(e) {
-                    reject(e.target.error);
-                };
-                reader.readAsArrayBuffer(data);
-            });
-        } else {
-            return data;
-        }
-    });
-
-    return promise.then(function(data) {
+    return external.Promise.resolve(inputData).then(function(data) {
         var dataType = exports.getTypeOf(data);
 
         if (!dataType) {
